@@ -20,9 +20,11 @@ GEMINI_API_KEY = "AIzaSyDTlAcI4qNx_QAKcTli2sc5jc_xl53qPZA"
 SHEET_ID = "1K7p3Yeu6k1CzFrfJGUUD3DQocUNdPjgIGQl8YNtjAjQ"
 CREDENTIALS_FILE = "credentials.json"
 
-INITIAL_SHEET_ROWS = 5000
-INITIAL_SHEET_COLS = 30
-UPDATE_INTERVAL = 30  # Intervalo de actualización en segundos
+UPDATE_INTERVAL = 30  # segundos para actualización periódica
+
+#############################################
+#  🗂️ Configuración de grupos a escuchar
+#############################################
 
 groups = {
     -1001669758312: "zin alpha entries",
@@ -51,13 +53,13 @@ spreadsheet = gs_client.open_by_key(SHEET_ID)
 print("✅ Conectado a Google Sheets")
 
 def safe_append_row(sheet, row_data):
-    """Añade una fila, expandiendo la hoja si hace falta."""
+    """Añade una fila nueva en la hoja, expandiéndola si es necesario."""
     for attempt in range(3):
         try:
             current_count = len(sheet.get_all_values())
             if current_count + 1 >= sheet.row_count:
                 sheet.add_rows(500)
-                print("➕ Añadidas 500 filas extra.")
+                print("➕ Se añadieron 500 filas extra.")
             sheet.append_row(row_data)
             print(f"✅ Fila añadida en posición {current_count + 1}.")
             return current_count + 1
@@ -67,10 +69,11 @@ def safe_append_row(sheet, row_data):
     return None
 
 def get_or_create_worksheet(spreadsheet, sheet_name, headers):
-    """Obtiene o crea una hoja con cabeceras predefinidas."""
+    """Obtiene o crea una hoja con las cabeceras dadas."""
     try:
         ws = spreadsheet.worksheet(sheet_name)
-        if ws.row_values(1) != headers:
+        existing_headers = ws.row_values(1)
+        if existing_headers != headers:
             print(f"⚠️ Cabeceras distintas en '{sheet_name}'. Se limpiará la hoja.")
             ws.clear()
             ws.append_row(headers)
@@ -80,8 +83,8 @@ def get_or_create_worksheet(spreadsheet, sheet_name, headers):
         print(f"📄 Creando nueva hoja: {sheet_name}")
         ws = spreadsheet.add_worksheet(
             title=sheet_name,
-            rows=INITIAL_SHEET_ROWS,
-            cols=INITIAL_SHEET_COLS
+            rows=5000,
+            cols=30
         )
         ws.append_row(headers)
         return ws
@@ -90,27 +93,54 @@ def get_or_create_worksheet(spreadsheet, sheet_name, headers):
         exit()
 
 #############################################
-#  🛠️ CONFIGURACIÓN DE HOJAS PRINCIPALES
+#  Configuración HOJAS
 #############################################
 
+# Hoja raw_messages
 raw_headers = ["Timestamp"] + list(groups.values())
 ws_messages = get_or_create_worksheet(spreadsheet, "raw_messages", raw_headers)
 
+# Hoja ca_tracking (overview)
+# Se mantiene lo esencial: 
+#   - Timestamp (cuando se registra la call)
+#   - Grupo (Telegram)
+#   - CA (token)
+#   - PairAddress (liquidez)
+#   - Símbolo
+#   - Initial Price
+#   - Current Price
+#   - Profit (%)
 ca_tracking_headers = [
-    "Timestamp", "Grupo", "CA", "DEX", "Símbolo", "PairAddress",
-    "Initial Price USD", "Current Price USD", "Profit from Call (%)",
-    "Liquidity USD", "Volume 24h", "FDV", "Transacciones 24h", "Market Cap", "Created At"
+    "Timestamp",
+    "Grupo",
+    "CA",
+    "PairAddress",
+    "Símbolo",
+    "Initial Price USD",
+    "Current Price USD",
+    "Profit (%)"
 ]
 ws_ca_tracking = get_or_create_worksheet(spreadsheet, "ca_tracking", ca_tracking_headers)
-
 group_to_col_index = {name: i+1 for i, name in enumerate(groups.values())}
 
-# Hojas individuales: {symbol: worksheet}
-crypto_sheets = {}
+# Hojas individuales (por token)
+# Incluimos el Grupo, y todos los datos (Price, Liquidez, FDV, etc.)
+# También convertimos PairCreated a timestamp humano.
 crypto_sheet_headers = [
-    "Timestamp", "Price USD", "Profit (%)", "Liquidity USD",
-    "Volume 24h", "FDV", "Market Cap", "Pair Created At", "Dex ID", "Token Symbol"
+    "Timestamp",
+    "Grupo",
+    "Price USD",
+    "Profit (%)",
+    "Liquidity USD",
+    "Volume 24h",
+    "FDV",
+    "Market Cap",
+    "Pair Created At",
+    "Dex ID",
+    "Token Symbol"
 ]
+
+crypto_sheets = {}
 
 def ensure_crypto_sheet(symbol):
     if symbol in crypto_sheets:
@@ -134,7 +164,6 @@ class DuplicateChecker:
         self.load_existing_pairs()
     
     def load_existing_pairs(self):
-        """Carga pairs ya registrados desde la hoja ca_tracking."""
         try:
             records = ws_ca_tracking.get_all_records()
             self.existing_pairs = {row['PairAddress'] for row in records if row.get('PairAddress')}
@@ -149,197 +178,192 @@ class DuplicateChecker:
 duplicate_checker = DuplicateChecker()
 
 #############################################
-#  🧮 FUNCIONES AUXILIARES
+#  AUXILIARES
 #############################################
 
 def parse_float(num_str):
     try:
         return float(num_str.replace(",", ".")) if num_str else None
     except:
-        return None
-
-def compute_profit_percent(current_price, initial_price):
-    try:
-        return round(((current_price - initial_price)/initial_price) * 100, 2)
-    except:
         return 0.0
 
+def compute_profit_percent(current_price, initial_price):
+    if not initial_price:
+        return 0.0
+    return round(((current_price - initial_price)/initial_price) * 100, 2)
+
 #############################################
-#  🤖 GEMINI: CLASIFICACIÓN IA CON FALLBACK
+#  🤖 GEMINI CLASIFY (con fallback)
 #############################################
 
 def gemini_classify(text):
     """
-    Clasifica el mensaje como relevante o no.
-    Si la API de Gemini falla (ejemplo 429), marcamos por fallback el mensaje como relevante
-    para no bloquear el flujo.
+    Si la API falla, devolvemos True (procesar).
     """
     try:
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel("gemini-pro")
         prompt = f"Clasifica como RELEVANTE sólo si menciona nuevo token:\n'{text}'"
         resp = model.generate_content(prompt)
-        is_relevant = "relevante" in resp.text.strip().lower()
-        print(f"🔍 Gemini classify => {is_relevant}")
-        return is_relevant
+        return ("relevante" in resp.text.strip().lower())
     except Exception as e:
-        print(f"⚠️ Error Gemini: {e}. Fallback => True (procesar mensaje).")
-        # Retornamos True para no bloquear la detección de nuevos CAs
+        print(f"⚠️ Error Gemini: {e}. Fallback => True")
         return True
 
 #############################################
-#  💾 ALMACÉN DE PARES (tracked_pairs)
+#  tracked_pairs: { pairAddress: {...} }
 #############################################
 
 tracked_pairs = {}
 
 def load_tracked_pairs():
-    """Carga la info (CA, symbol, initial_price, row_index) desde ca_tracking."""
     try:
         values = ws_ca_tracking.get_all_values()
-        if len(values) < 2:
+        if len(values) <= 1:
             print("⚠️ ca_tracking sin registros.")
             return
         headers = values[0]
         for i, row in enumerate(values[1:], start=2):
             try:
                 pair_addr = row[headers.index("PairAddress")]
-                if pair_addr and pair_addr not in tracked_pairs:
-                    init_price_str = row[headers.index("Initial Price USD")]
-                    init_price = parse_float(init_price_str)
-                    if init_price and init_price > 0:
-                        ca_str = row[headers.index("CA")]
-                        symb_str = row[headers.index("Símbolo")]
-                        tracked_pairs[pair_addr] = {
-                            "ca": ca_str,
-                            "symbol": symb_str,
-                            "initial_price": init_price,
-                            "row_index": i
-                        }
-                        ensure_crypto_sheet(symb_str)
+                if pair_addr:
+                    init_price = parse_float(row[headers.index("Initial Price USD")])
+                    symbol = row[headers.index("Símbolo")]
+                    tracked_pairs[pair_addr] = {
+                        "symbol": symbol,
+                        "initial_price": init_price,
+                        "row_index": i
+                    }
+                    # No guardamos CA ni Grupo, ya no se usan para updates
+                    ensure_crypto_sheet(symbol)
             except Exception as e:
-                print(f"⚠️ Error fila {i} => {e}")
-        print(f"✅ Se cargaron {len(tracked_pairs)} pares.")
+                print(f"⚠️ Fila {i} => {e}")
+        print(f"✅ Se cargaron {len(tracked_pairs)} pares en memoria.")
     except Exception as e:
-        print(f"❌ Error al cargar tracked_pairs: {e}")
+        print(f"❌ Error en load_tracked_pairs => {e}")
 
 #############################################
-#  📊 DEXSCREENER: OBTENER DATOS
+#  DexScreener
 #############################################
 
-def get_dexscreener_data_for_pairs(chain, pair_addresses):
+def get_pairs_data_solana(pair_addrs):
     """
-    Llama a /latest/dex/pairs/{chain}/{addr1},{addr2}...
-    Retorna un listado de pares.
+    Llama /latest/dex/pairs/solana/<addr1>,<addr2>...
+    Devuelve una lista con la info de cada par.
     """
-    joined = ",".join(pair_addresses)
-    url = f"https://api.dexscreener.com/latest/dex/pairs/{chain}/{joined}"
+    joined = ",".join(pair_addrs)
+    url = f"https://api.dexscreener.com/latest/dex/pairs/solana/{joined}"
     print(f"==> DexScreener request: {url}")
     try:
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-        
-        # data puede contener 'pairs': [...] o 'pair': ...
-        pairs = data.get('pairs')
-        if pairs is not None:
-            return pairs
-        single = data.get('pair')
-        if single:
-            return [single]
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        # Puede ser 'pairs' o 'pair'
+        if "pairs" in data and data["pairs"] is not None:
+            return data["pairs"]
+        if "pair" in data and data["pair"] is not None:
+            return [data["pair"]]
         return []
     except Exception as e:
-        print(f"⚠️ Error en get_dexscreener_data_for_pairs: {e}")
+        print(f"⚠️ Error get_pairs_data_solana => {e}")
         return []
 
-def extract_data_fields(pair_json):
-    """Extrae campos relevantes del JSON."""
+def dex_extract_fields(pair_json):
+    """Extrae campos: price, liquidity, volume24h, fdv, marketCap, etc."""
     try:
         price_str = pair_json.get('priceUsd', "0")
-        price = parse_float(price_str) or 0.0
-        liq = parse_float(str(pair_json.get('liquidity', {}).get('usd', 0))) or 0.0
-        vol = parse_float(str(pair_json.get('volume', {}).get('h24', 0))) or 0.0
-        fdv = parse_float(str(pair_json.get('fdv', 0))) or 0.0
-        txns_24 = (
-            pair_json.get('txns', {}).get('h24', {}).get('buys', 0)
-            + pair_json.get('txns', {}).get('h24', {}).get('sells', 0)
-        )
-        mc = parse_float(str(pair_json.get('marketCap', 0))) or 0.0
-        pair_created = pair_json.get('pairCreatedAt', None)
-        dex_id = pair_json.get('dexId', "")
-        symb = pair_json.get('baseToken', {}).get('symbol', "???")
+        price = parse_float(price_str)
+        liquidity = parse_float(str(pair_json.get('liquidity', {}).get('usd', 0)))
+        volume_24h = parse_float(str(pair_json.get('volume', {}).get('h24', 0)))
+        fdv = parse_float(str(pair_json.get('fdv', 0)))
+        txns_24h = (pair_json.get('txns', {}).get('h24', {}).get('buys', 0)
+                    + pair_json.get('txns', {}).get('h24', {}).get('sells', 0))
+        market_cap = parse_float(str(pair_json.get('marketCap', 0)))
+        pair_created = pair_json.get('pairCreatedAt', None)  # milisegundos?
+
+        # Convertimos el pairCreated en formato legible si viene en milis
+        pair_created_str = ""
+        if isinstance(pair_created, int):
+            # Asumimos que es milisegundos
+            dt_obj = datetime.datetime.utcfromtimestamp(pair_created/1000.0)
+            pair_created_str = dt_obj.strftime("%Y-%m-%d %H:%M:%S UTC")
+        elif isinstance(pair_created, str) and pair_created.isdigit():
+            # Convertir string a int
+            try:
+                pair_created_int = int(pair_created)
+                dt_obj = datetime.datetime.utcfromtimestamp(pair_created_int/1000.0)
+                pair_created_str = dt_obj.strftime("%Y-%m-%d %H:%M:%S UTC")
+            except:
+                pair_created_str = ""
+        else:
+            # No es milisegundos
+            pair_created_str = ""
+
+        dex_id = pair_json.get('dexId', '')
+        symbol = pair_json.get('baseToken', {}).get('symbol', '')
+
         return {
-            "price": price,
-            "liquidity": liq,
-            "volume_24h": vol,
-            "fdv": fdv,
-            "txns_24h": txns_24,
-            "market_cap": mc,
-            "pair_created_at": pair_created,
+            "price": price if price else 0.0,
+            "liquidity": liquidity if liquidity else 0.0,
+            "volume_24h": volume_24h if volume_24h else 0.0,
+            "fdv": fdv if fdv else 0.0,
+            "txns_24h": txns_24h,
+            "market_cap": market_cap if market_cap else 0.0,
+            "pair_created_at": pair_created_str,
             "dex_id": dex_id,
-            "symbol": symb
+            "symbol": symbol
         }
     except Exception as e:
-        print(f"⚠️ Error extrayendo campos => {e}")
+        print(f"⚠️ Error dex_extract_fields => {e}")
         return None
 
 #############################################
-#  🕓 ACTUALIZACIÓN PERIÓDICA
+#  UPDATE LOOP
 #############################################
 
-async def update_price_history():
-    """
-    Actualiza periódicamente (cada 30s) el precio en ca_tracking y
-    añade histórico en cada hoja individual.
-    """
+async def update_price_loop():
     while True:
         try:
             if not tracked_pairs:
-                print("⚠️ Sin pares en seguimiento.")
+                print("⚠️ No hay pares en tracked_pairs.")
                 await asyncio.sleep(UPDATE_INTERVAL)
                 continue
-            
-            all_pair_addresses = list(tracked_pairs.keys())
-            print(f"🔄 Actualizando {len(all_pair_addresses)} pares en DexScreener...")
-            
+
+            all_pairs = list(tracked_pairs.keys())
+            print(f"🔄 Actualizando {len(all_pairs)} pares en DexScreener...")
             chunk_size = 30
-            updates_ca_tracking = []
+            updates_ca = []
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            for i in range(0, len(all_pair_addresses), chunk_size):
-                batch = all_pair_addresses[i:i+chunk_size]
-                results = get_dexscreener_data_for_pairs("solana", batch)
-                
-                for pair_data in results:
-                    pair_addr = pair_data.get('pairAddress', "")
+
+            for i in range(0, len(all_pairs), chunk_size):
+                batch = all_pairs[i:i+chunk_size]
+                data_list = get_pairs_data_solana(batch)
+                for pair_info in data_list:
+                    pair_addr = pair_info.get("pairAddress", "")
                     if pair_addr not in tracked_pairs:
                         continue
-                    extracted = extract_data_fields(pair_data)
+                    extracted = dex_extract_fields(pair_info)
                     if not extracted or extracted["price"] <= 0:
-                        print(f"⚠️ Datos inválidos en par => {pair_addr}")
                         continue
-                    
-                    info_tracked = tracked_pairs[pair_addr]
-                    init_price = info_tracked["initial_price"]
+                    init_price = tracked_pairs[pair_addr]["initial_price"]
                     profit = compute_profit_percent(extracted["price"], init_price)
-                    row_idx = info_tracked["row_index"]
-                    
-                    # Actualizar en ca_tracking
-                    updates_ca_tracking.append({
-                        "range": f"H{row_idx}:K{row_idx}",
+                    row_idx = tracked_pairs[pair_addr]["row_index"]
+                    updates_ca.append({
+                        "range": f"F{row_idx}:H{row_idx}",  # columns [Current Price, Profit(%)]
                         "values": [[
                             extracted["price"],
-                            profit,
-                            extracted["liquidity"],
-                            extracted["volume_24h"]
+                            profit
                         ]]
                     })
-                    
-                    # Registrar histórico
-                    ws_symb = ensure_crypto_sheet(info_tracked["symbol"])
-                    if ws_symb:
-                        hist_row = [
+
+                    # Actualizar la hoja individual
+                    symb = tracked_pairs[pair_addr]["symbol"]
+                    ws = ensure_crypto_sheet(symb)
+                    if ws:
+                        # [Timestamp, Grupo, Price, Profit, Liquidity, Vol, FDV, MC, Created, DexID, Symbol]
+                        row_hist = [
                             now_str,
+                            "?",  # No la tenemos en tracked_pairs, la recordamos en register_new_pair
                             extracted["price"],
                             profit,
                             extracted["liquidity"],
@@ -350,243 +374,220 @@ async def update_price_history():
                             extracted["dex_id"],
                             extracted["symbol"]
                         ]
-                        await asyncio.to_thread(safe_append_row, ws_symb, hist_row)
-            
-            if updates_ca_tracking:
-                await asyncio.to_thread(ws_ca_tracking.batch_update, updates_ca_tracking)
-                print(f"🔄 {len(updates_ca_tracking)} actualizaciones en ca_tracking.")
+                        await asyncio.to_thread(safe_append_row, ws, row_hist)
+
+            if updates_ca:
+                await asyncio.to_thread(ws_ca_tracking.batch_update, updates_ca)
+                print(f"🔄 {len(updates_ca)} actualizaciones en ca_tracking.")
             else:
-                print("ℹ️ No hay updates para ca_tracking esta ronda.")
+                print("ℹ️ No hay actualizaciones para ca_tracking esta ronda.")
         except Exception as e:
-            print(f"❌ Error en update_price_history => {e}")
-        
+            print(f"❌ Error en update_price_loop => {e}")
+
         await asyncio.sleep(UPDATE_INTERVAL)
 
 #############################################
-#  🔍 DETECCIÓN CA/DEX LINKS
+#  DETECT CA/DEX
 #############################################
 
 CA_REGEX = re.compile(r"\b[1-9A-HJ-NP-Za-km-z]{32,44}\b")
 DEX_LINK_REGEX = re.compile(r"https?://dexscreener\.com/solana/([^/\s\?]+)")
 
 def detect_addresses(text):
-    """
-    Retorna una lista de tuplas (source, address) con:
-     - source="CA"  => dirección base
-     - source="DEX" => address extraído de link DexScreener
-    """
-    found = []
+    addresses = []
     for match in CA_REGEX.findall(text):
-        found.append(("CA", match))
+        addresses.append(("CA", match))
     for match in DEX_LINK_REGEX.findall(text):
-        found.append(("DEX", match))
-    return found
+        addresses.append(("DEX", match))
+    return addresses
 
 #############################################
-#  🏷️ PROCESAMIENTO DE MENSAJES
+#  PROCESAMIENTO MENSAJES
 #############################################
 
 processed_msg_ids = set()
 
-async def process_message(event):
+async def handle_message(event):
+    # Evitar duplicados
     msg_id = event.message.id
     if msg_id in processed_msg_ids:
-        print(f"⚠️ Mensaje duplicado {msg_id}, se omite.")
         return
     processed_msg_ids.add(msg_id)
-    
+
     chat_id = event.chat_id
     group_name = groups.get(chat_id, "Desconocido")
     msg_text = event.message.message
-    ts_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     # Guardar en raw_messages
-    row = [ts_str] + [""]*(len(raw_headers)-1)
+    row = [now_str] + [""]*(len(raw_headers)-1)
     if group_name in group_to_col_index:
         row[group_to_col_index[group_name]] = msg_text
     await asyncio.to_thread(safe_append_row, ws_messages, row)
-    
-    # Clasificación con Gemini (con fallback en error => True)
-    relevant = await asyncio.to_thread(gemini_classify, msg_text)
-    if not relevant:
+
+    # IA: fallback => True si error
+    is_relevant = await asyncio.to_thread(gemini_classify, msg_text)
+    if not is_relevant:
         print("⚠️ Mensaje irrelevante IA.")
         return
-    
-    # Detectar direcciones
+
+    # Extraer CA/DEX
     candidates = detect_addresses(msg_text)
     if not candidates:
         print("❌ No se hallaron direcciones CA/DEX en el mensaje.")
         return
-    print(f"🔍 Direcciones halladas => {candidates}")
-    
+
+    print(f"🔍 Detectado => {candidates}")
     for (src, addr) in candidates:
         if src == "CA":
-            # Buscar best pair => /search?q=addr&chain=solana
+            # /search => filtrar baseToken.address=CA => mayor liquidez
             try:
-                best_pair_data = find_best_pair_for_ca(addr)
-                if not best_pair_data:
-                    print(f"⚠️ No se encontró par con liquidez > 0 para CA {addr}")
+                pair_data = find_best_pair_for_ca(addr)
+                if not pair_data:
+                    print(f"⚠️ No se encontró par liquidez>0 para CA {addr}")
                     continue
-                register_new_pair(best_pair_data, addr, group_name, ts_str)
+                register_pair(pair_data, addr, group_name, now_str)
             except Exception as e:
-                print(f"❌ Error en CA {addr} => {e}")
+                print(f"❌ Error CA {addr} => {e}")
         else:
             # Link DexScreener => interpretado como pairAddress
             try:
                 pair_data = find_pair_by_address(addr)
                 if not pair_data:
-                    print(f"⚠️ No se halló info para pair {addr}")
+                    print(f"⚠️ No se halló info en /search para pair {addr}")
                     continue
-                register_new_pair(pair_data, addr, group_name, ts_str)
+                register_pair(pair_data, addr, group_name, now_str)
             except Exception as e:
-                print(f"❌ Error en pair {addr} => {e}")
+                print(f"❌ Error pair {addr} => {e}")
 
 def find_best_pair_for_ca(ca):
     url = f"https://api.dexscreener.com/latest/dex/search?q={ca}&chain=solana"
     r = requests.get(url, timeout=10)
     r.raise_for_status()
-    data = r.json()
-    pairs = data.get("pairs", [])
-    valid = [p for p in pairs if p.get('baseToken', {}).get('address', '').lower() == ca.lower()]
+    js = r.json()
+    pairs = js.get("pairs", [])
+    # filtrar baseToken.address == ca
+    valid = [p for p in pairs if p.get('baseToken', {}).get('address','').lower() == ca.lower()]
     if not valid:
         return None
-    return max(valid, key=lambda x: float(x.get('liquidity', {}).get('usd', 0) or 0))
+    best = max(valid, key=lambda x: float(x.get('liquidity',{}).get('usd',0) or 0))
+    return best
 
 def find_pair_by_address(pair_addr):
     url = f"https://api.dexscreener.com/latest/dex/search?q={pair_addr}&chain=solana"
     r = requests.get(url, timeout=10)
     r.raise_for_status()
-    data = r.json()
-    pairs = data.get("pairs", [])
+    js = r.json()
+    pairs = js.get("pairs", [])
     for p in pairs:
-        if p.get('pairAddress', '').lower() == pair_addr.lower():
+        if p.get('pairAddress','').lower() == pair_addr.lower():
             return p
     return None
 
-def register_new_pair(pair_data, raw_addr, group_name, ts_str):
+def register_pair(pair_data, raw_ca_or_pair, group_name, ts_str):
     pair_addr = pair_data.get("pairAddress")
     if not pair_addr:
-        print(f"⚠️ pairAddress faltante en {raw_addr}")
         return
-    # Checar duplicado
+    # check duplicado
     if duplicate_checker.is_duplicate(pair_addr):
         print(f"ℹ️ Par duplicado => {pair_addr}")
         return
-    
-    extracted = extract_data_fields(pair_data)
-    if not extracted or extracted["price"] <= 0:
-        print(f"⚠️ Datos inválidos para {raw_addr}")
+
+    # extraer fields
+    extracted = dex_extract_fields(pair_data)
+    if not extracted or extracted["price"] <=0:
+        print(f"⚠️ Datos inválidos => {raw_ca_or_pair}")
         return
-    
-    # Inserción en ca_tracking
+
+    # Insertar fila en ca_tracking
+    # [Timestamp, Grupo, CA, Pair, Símbolo, InitPrice, CurrPrice, Profit%]
     row = [
         ts_str,
         group_name,
-        raw_addr,
-        extracted["dex_id"],
-        extracted["symbol"],
+        raw_ca_or_pair,
         pair_addr,
-        extracted["price"],
-        extracted["price"],
-        0.0,
-        extracted["liquidity"],
-        extracted["volume_24h"],
-        extracted["fdv"],
-        extracted["txns_24h"],
-        extracted["market_cap"],
-        extracted["pair_created_at"]
+        extracted["symbol"],
+        extracted["price"],  # init
+        extracted["price"],  # current
+        0.0                  # profit
     ]
     row_idx = safe_append_row(ws_ca_tracking, row)
     if not row_idx:
-        print("❌ Falló la inserción en ca_tracking.")
+        print("❌ No se pudo registrar en ca_tracking.")
         return
-    
+
     tracked_pairs[pair_addr] = {
-        "ca": raw_addr,
         "symbol": extracted["symbol"],
         "initial_price": extracted["price"],
         "row_index": row_idx
     }
     duplicate_checker.existing_pairs.add(pair_addr)
     ensure_crypto_sheet(extracted["symbol"])
-    print(f"🆕 Nuevo par registrado => {extracted['symbol']} / {pair_addr}")
+    print(f"🆕 Nuevo par => {extracted['symbol']} / {pair_addr}")
 
 #############################################
-#  🔄 ACTUALIZACIÓN INICIAL
+#  ACTUALIZACIÓN INICIAL
 #############################################
 
 async def immediate_update():
-    """
-    Actualiza los pares ya existentes en tracked_pairs antes de iniciar el bot,
-    usando /pairs/solana/<addr1>,<addr2>... en lotes de 30.
-    """
-    print("⏳ Immediate update...")
+    print("⏳ Iniciando actualización inicial de pares previos...")
+    if not tracked_pairs:
+        print("⚠️ Ningún par previo en ca_tracking.")
+        return
     try:
-        if not tracked_pairs:
-            print("🔄 No hay pares para actualizar en immediate_update.")
-            return
-        
         all_pairs = list(tracked_pairs.keys())
-        chunk_size = 30
+        chunk = 30
         updates = []
-        for i in range(0, len(all_pairs), chunk_size):
-            batch = all_pairs[i:i+chunk_size]
-            results = get_dexscreener_data_for_pairs("solana", batch)
-            for pair_json in results:
-                pair_addr = pair_json.get("pairAddress", "")
+        for i in range(0,len(all_pairs), chunk):
+            batch = all_pairs[i:i+chunk]
+            pairs_data = get_pairs_data_solana(batch)
+            for pair_info in pairs_data:
+                pair_addr = pair_info.get('pairAddress','')
                 if pair_addr not in tracked_pairs:
                     continue
-                extracted = extract_data_fields(pair_json)
-                if not extracted or extracted["price"] <= 0:
+                extracted = dex_extract_fields(pair_info)
+                if not extracted or extracted["price"]<=0:
                     continue
                 init_price = tracked_pairs[pair_addr]["initial_price"]
                 profit = compute_profit_percent(extracted["price"], init_price)
                 row_idx = tracked_pairs[pair_addr]["row_index"]
                 updates.append({
-                    "range": f"H{row_idx}:K{row_idx}",
+                    "range": f"F{row_idx}:H{row_idx}",
                     "values": [[
                         extracted["price"],
-                        profit,
-                        extracted["liquidity"],
-                        extracted["volume_24h"]
+                        profit
                     ]]
                 })
         if updates:
             ws_ca_tracking.batch_update(updates)
-            print(f"🔄 immediate_update => {len(updates)} filas actualizadas.")
+            print(f"🔄 immediate_update => {len(updates)} actualizaciones.")
         else:
             print("ℹ️ immediate_update => sin updates.")
     except Exception as e:
         print(f"❌ Error immediate_update => {e}")
 
 #############################################
-#  🏁 BOT TELEGRAM
+#  TELEGRAM BOT
 #############################################
 
 client = TelegramClient("session_name", API_ID, API_HASH)
 
 @client.on(events.NewMessage(chats=list(groups.keys())))
 async def handler(event):
-    print(f"📥 Mensaje en {event.chat_id}")
-    await process_message(event)
+    await handle_message(event)
 
 async def main():
     print("🚀 Iniciando Bot DexScreener + IA + Sheets...")
     # Cargar pares
     await asyncio.to_thread(load_tracked_pairs)
-    print(f"⚙️ Se han cargado {len(tracked_pairs)} pares en memoria.")
-    
-    # Actualización inicial
+    # Update inicial
     await immediate_update()
-    
-    # Conectar Telegram
+    # Conectar
     await client.start()
     print("✅ Bot conectado a Telegram.")
-    
-    # Tarea de actualización periódica
-    asyncio.create_task(update_price_history())
-    
-    print(f"🤖 Bot en marcha, actualizando cada {UPDATE_INTERVAL}s.")
+    # Tarea de actualización
+    asyncio.create_task(update_price_loop())
+    print(f"🤖 Bot corriendo. Intervalo update: {UPDATE_INTERVAL}s")
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
