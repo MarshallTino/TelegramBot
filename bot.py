@@ -285,7 +285,7 @@ def register_new_pair(pair_data, raw_addr, group_name, ts_str):
     tracked_pairs[pair_addr] = {
         "ca": raw_addr,
         "symbol": extracted["symbol"],
-@@ -543,9 +517,8 @@
+@@ -543,83 +517,82 @@
 
 async def immediate_update():
     """
@@ -295,3 +295,77 @@ async def immediate_update():
     """
     print("⏳ Immediate update...")
     try:
+        if not tracked_pairs:
+            print("🔄 No hay pares para actualizar en immediate_update.")
+            return
+
+        all_pairs = list(tracked_pairs.keys())
+        chunk_size = 30
+        updates = []
+        for i in range(0, len(all_pairs), chunk_size):
+            batch = all_pairs[i:i+chunk_size]
+            results = get_dexscreener_data_for_pairs("solana", batch)
+            for pair_json in results:
+                pair_addr = pair_json.get("pairAddress", "")
+                if pair_addr not in tracked_pairs:
+                    continue
+                extracted = extract_data_fields(pair_json)
+                if not extracted or extracted["price"] <= 0:
+                    continue
+                init_price = tracked_pairs[pair_addr]["initial_price"]
+                profit = compute_profit_percent(extracted["price"], init_price)
+                row_idx = tracked_pairs[pair_addr]["row_index"]
+                updates.append({
+                    "range": f"H{row_idx}:K{row_idx}",
+                    "values": [[
+                        extracted["price"],
+                        profit,
+                        extracted["liquidity"],
+                        extracted["volume_24h"]
+                    ]]
+                })
+        if updates:
+            ws_ca_tracking.batch_update(updates)
+            print(f"🔄 immediate_update => {len(updates)} filas actualizadas.")
+        else:
+            print("ℹ️ immediate_update => sin updates.")
+    except Exception as e:
+        print(f"❌ Error immediate_update => {e}")
+
+#############################################
+#  🏁 BOT TELEGRAM
+#############################################
+
+client = TelegramClient("session_name", API_ID, API_HASH)
+
+@client.on(events.NewMessage(chats=list(groups.keys())))
+async def handler(event):
+    print(f"📥 Mensaje en {event.chat_id}")
+    await process_message(event)
+
+async def main():
+    print("🚀 Iniciando Bot DexScreener + IA + Sheets...")
+    # Cargar pares
+    await asyncio.to_thread(load_tracked_pairs)
+    print(f"⚙️ Se han cargado {len(tracked_pairs)} pares en memoria.")
+
+    # Actualización inicial
+    await immediate_update()
+
+    # Conectar Telegram
+    await client.start()
+    print("✅ Bot conectado a Telegram.")
+
+    # Tarea de actualización periódica
+    asyncio.create_task(update_price_history())
+
+    print(f"🤖 Bot en marcha, actualizando cada {UPDATE_INTERVAL}s.")
+    await client.run_until_disconnected()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print(f"❌ Error fatal => {e}")
+    finally:
+        print("🛑 Bot detenido.")
