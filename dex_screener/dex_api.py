@@ -57,6 +57,39 @@ def extract_pair_fields(pair_json):
         print(f"⚠️ Error extract_pair_fields => {e}")
         return None
 
+def extract_all_columns(pair_json):
+    """
+    Devuelve un dict con todas las columnas relevantes.
+    """
+    base = pair_json.get('baseToken', {})
+    quote = pair_json.get('quoteToken', {})
+    txns_24h = pair_json.get('txns', {}).get('h24', {})
+    volume_24h = pair_json.get('volume', {}).get('h24', 0)
+    liquidity = pair_json.get('liquidity', {})
+    return {
+        "chainId": pair_json.get("chainId",""),
+        "dexId": pair_json.get("dexId",""),
+        "pairAddress": pair_json.get("pairAddress",""),
+        "baseTokenAddress": base.get("address",""),
+        "baseTokenName": base.get("name",""),
+        "baseTokenSymbol": base.get("symbol",""),
+        "quoteTokenAddress": quote.get("address",""),
+        "quoteTokenName": quote.get("name",""),
+        "quoteTokenSymbol": quote.get("symbol",""),
+        "priceNative": pair_json.get("priceNative",""),
+        "priceUsd": pair_json.get("priceUsd",""),
+        "txns24hBuys": txns_24h.get("buys",0),
+        "txns24hSells": txns_24h.get("sells",0),
+        "volume24h": volume_24h,
+        "priceChange24h": pair_json.get("priceChange",{}).get("h24",0),
+        "liquidityUsd": liquidity.get("usd",0),
+        "liquidityBase": liquidity.get("base",0),
+        "liquidityQuote": liquidity.get("quote",0),
+        "fdv": pair_json.get("fdv",0),
+        "marketCap": pair_json.get("marketCap",0),
+        "pairCreatedAt": pair_json.get("pairCreatedAt",""),
+    }
+
 def extract_all_data_as_json(pair_json):
     """
     Devuelve TODO el contenido devuelto por DexScreener en un string JSON,

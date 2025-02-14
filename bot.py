@@ -10,7 +10,8 @@ from dex_screener.dex_api import (
     get_pairs_data,
     search_pairs,
     extract_pair_fields,
-    extract_all_data_as_json
+    extract_all_data_as_json,
+    extract_all_columns
 )
 from google_sheets.sheets_manager import connect_sheets, get_or_create_worksheet, safe_append_row
 from utils.common import (
@@ -75,44 +76,53 @@ ca_tracking_headers = [
 ws_ca_tracking = get_or_create_worksheet(spreadsheet, "ca_tracking", ca_tracking_headers)
 
 # Hoja individual => incl. raw_api_data
-crypto_sheet_headers = [
+crypto_extended_headers = [
     "Timestamp",
-    "Chain",
-    "Grupo",
-    "Price USD",
-    "Profit (%)",
-    "Liquidity USD",
-    "Volume 24h",
-    "FDV",
-    "Market Cap",
-    "Pair Created At",
-    "Dex ID",
-    "Token Symbol",
-    "raw_api_data"  # <--- JSON con todo lo devuelto
+    "chainId",
+    "dexId",
+    "pairAddress",
+    "baseTokenAddress",
+    "baseTokenName",
+    "baseTokenSymbol",
+    "quoteTokenAddress",
+    "quoteTokenName",
+    "quoteTokenSymbol",
+    "priceNative",
+    "priceUsd",
+    "txns24hBuys",
+    "txns24hSells",
+    "volume24h",
+    "priceChange24h",
+    "liquidityUsd",
+    "liquidityBase",
+    "liquidityQuote",
+    "fdv",
+    "marketCap",
+    "pairCreatedAt",
+    "raw_api_data"
 ]
+
 crypto_sheets = {}
 
-from utils.common import sheet_name_for_chain_symbol
+crypto_grouped_titles = [
+    "General Info","General Info","General Info",
+    "Price Info","Price Info","Liquidity Info",
+    "Liquidity Info","Liquidity Info","Liquidity Info",
+    "Pair Info","Pair Info","Pair Info","Full JSON"
+]
 
 def ensure_crypto_sheet(chain, symbol):
-    """
-    Crea u obtiene la hoja individual con el emoji correspondiente a la chain.
-    Ej: "🔵 BROCCOLI" para (chain='solana', symbol='BROCCOLI').
-    """
     sname = sheet_name_for_chain_symbol(chain, symbol)
-
     if sname in crypto_sheets:
         return crypto_sheets[sname]
-
     try:
-        # Ver si ya existe
         ws = spreadsheet.worksheet(sname)
         print(f"✅ Hoja '{sname}' ya existe.")
     except:
-        # no existe => crearlo
         print(f"📄 Creando/Verificando nueva hoja '{sname}'")
-        ws = get_or_create_worksheet(spreadsheet, sname, crypto_sheet_headers)
-
+        ws = get_or_create_worksheet(spreadsheet, sname, crypto_extended_headers)
+        ws.insert_row(crypto_grouped_titles, 1)
+        print(f"✅ Fila de agrupación creada en '{sname}'")
     crypto_sheets[sname] = ws
     return ws
 
@@ -221,21 +231,32 @@ async def update_loop():
                         ws_sym = ensure_crypto_sheet(chain, symb)
                         if ws_sym:
                             # Extraemos JSON con TODO
+                            pd_all = extract_all_columns(pd)
                             raw_data = extract_all_data_as_json(pd)
                             new_row = [
                                 now_str,
-                                chain,
-                                g,
-                                extracted["price"],
-                                profit,
-                                extracted["liquidity"],
-                                extracted["volume_24h"],
-                                extracted["fdv"],
-                                extracted["market_cap"],
-                                extracted["pair_created_at"],
-                                extracted["dex_id"],
-                                symb,
-                                raw_data   # <--- aquí guardamos todo
+                                pd_all["chainId"],
+                                pd_all["dexId"],
+                                pd_all["pairAddress"],
+                                pd_all["baseTokenAddress"],
+                                pd_all["baseTokenName"],
+                                pd_all["baseTokenSymbol"],
+                                pd_all["quoteTokenAddress"],
+                                pd_all["quoteTokenName"],
+                                pd_all["quoteTokenSymbol"],
+                                pd_all["priceNative"],
+                                pd_all["priceUsd"],
+                                pd_all["txns24hBuys"],
+                                pd_all["txns24hSells"],
+                                pd_all["volume24h"],
+                                pd_all["priceChange24h"],
+                                pd_all["liquidityUsd"],
+                                pd_all["liquidityBase"],
+                                pd_all["liquidityQuote"],
+                                pd_all["fdv"],
+                                pd_all["marketCap"],
+                                pd_all["pairCreatedAt"],
+                                raw_data  # JSON completo
                             ]
                             await asyncio.to_thread(safe_append_row, ws_sym, new_row)
 
@@ -247,7 +268,6 @@ async def update_loop():
 
         except Exception as e:
             print(f"❌ Error en update_loop => {e}")
-
         await asyncio.sleep(UPDATE_INTERVAL)
 
 #############################################
@@ -360,7 +380,6 @@ def register_pair(pair_data, chain, raw_ca_or_pair, grupo, ts_str):
             "row_index": row_idx
         }
         duplicate_checker.existing_pairs.add(pair_addr)
-        from utils.common import sheet_name_for_chain_symbol
         ensure_crypto_sheet(chain, extracted["symbol"])
         print(f"🆕 Nuevo token => chain:{chain} symbol:{extracted['symbol']} pair:{pair_addr}")
     else:
@@ -372,8 +391,6 @@ def register_pair(pair_data, chain, raw_ca_or_pair, grupo, ts_str):
 
 async def main():
     print("🚀 Iniciando Bot DexScreener + IA + Sheets...")
-    from utils.common import current_timestamp_str
-    from utils.common import parse_float, compute_profit_percent
     await asyncio.to_thread(load_tracked_pairs)
     await client.start()
     print("✅ Bot conectado a Telegram.")

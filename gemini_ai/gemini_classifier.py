@@ -2,7 +2,7 @@
 
 import google.generativeai as genai
 
-def gemini_classify(text, api_key=""):
+def gemini_classify(text, api_key="AIzaSyDTlAcI4qNx_QAKcTli2sc5jc_xl53qPZA"):
     """
     Clasifica el mensaje usando Gemini AI.
     Si falla (por ejemplo 429), retornamos True como fallback para no bloquear.
