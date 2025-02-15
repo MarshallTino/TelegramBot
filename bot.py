@@ -39,9 +39,16 @@ UPDATE_INTERVAL = 30
 #############################################
 
 groups = {
-    -1001669758312: "zin alpha entries",
+   -1001669758312: "zin alpha entries",
     -1001756488143: "sol",
     -1001593046999: "vulturecalls",
+    -1002124780831: "printor gambles",
+    -1002161891429: "printor calls",
+    -1001198046393: "pows gems calls",
+    -1001870127953: "watisdes",
+    -1002390818052: "obitcalls",
+    -1002234182572: "ketchums gambles",
+    -1001355642881: "crypto eus gems",
     -1002360457432: "Marshall Calls"
 }
 
