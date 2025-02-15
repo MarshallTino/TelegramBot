@@ -78,7 +78,8 @@ ca_tracking_headers = [
     "Símbolo",
     "Initial Price USD",
     "Current Price USD",
-    "Profit (%)"
+    "Profit (%)",
+    "ATH Price USD"
 ]
 ws_ca_tracking = get_or_create_worksheet(spreadsheet, "ca_tracking", ca_tracking_headers)
 
@@ -87,6 +88,7 @@ crypto_extended_headers = [
     "Timestamp",
     "chainId",
     "dexId",
+    "url",
     "pairAddress",
     "baseTokenAddress",
     "baseTokenName",
@@ -96,16 +98,33 @@ crypto_extended_headers = [
     "quoteTokenSymbol",
     "priceNative",
     "priceUsd",
-    "txns24hBuys",
-    "txns24hSells",
-    "volume24h",
-    "priceChange24h",
+    "txns_m5_buys",
+    "txns_m5_sells",
+    "txns_h1_buys",
+    "txns_h1_sells",
+    "txns_h6_buys",
+    "txns_h6_sells",
+    "txns_h24_buys",
+    "txns_h24_sells",
+    "volume_m5",
+    "volume_h1",
+    "volume_h6",
+    "volume_h24",
+    "priceChangeM5",
+    "priceChangeH1",
+    "priceChangeH6",
+    "priceChangeH24",
     "liquidityUsd",
     "liquidityBase",
     "liquidityQuote",
     "fdv",
     "marketCap",
     "pairCreatedAt",
+    "infoImageUrl",
+    "infoHeader",
+    "infoOpenGraph",
+    "infoWebsites",
+    "infoSocials",
     "raw_api_data"
 ]
 
@@ -244,6 +263,7 @@ async def update_loop():
                                 now_str,
                                 pd_all["chainId"],
                                 pd_all["dexId"],
+                                pd_all["url"],
                                 pd_all["pairAddress"],
                                 pd_all["baseTokenAddress"],
                                 pd_all["baseTokenName"],
@@ -253,19 +273,57 @@ async def update_loop():
                                 pd_all["quoteTokenSymbol"],
                                 pd_all["priceNative"],
                                 pd_all["priceUsd"],
-                                pd_all["txns24hBuys"],
-                                pd_all["txns24hSells"],
-                                pd_all["volume24h"],
-                                pd_all["priceChange24h"],
+                                pd_all["txns_m5_buys"],
+                                pd_all["txns_m5_sells"],
+                                pd_all["txns_h1_buys"],
+                                pd_all["txns_h1_sells"],
+                                pd_all["txns_h6_buys"],
+                                pd_all["txns_h6_sells"],
+                                pd_all["txns_h24_buys"],
+                                pd_all["txns_h24_sells"],
+                                pd_all["volume_m5"],
+                                pd_all["volume_h1"],
+                                pd_all["volume_h6"],
+                                pd_all["volume_h24"],
+                                pd_all["priceChangeM5"],
+                                pd_all["priceChangeH1"],
+                                pd_all["priceChangeH6"],
+                                pd_all["priceChangeH24"],
                                 pd_all["liquidityUsd"],
                                 pd_all["liquidityBase"],
                                 pd_all["liquidityQuote"],
                                 pd_all["fdv"],
                                 pd_all["marketCap"],
                                 pd_all["pairCreatedAt"],
+                                pd_all["infoImageUrl"],
+                                pd_all["infoHeader"],
+                                pd_all["infoOpenGraph"],
+                                pd_all["infoWebsites"],
+                                pd_all["infoSocials"],
                                 raw_data  # JSON completo
                             ]
                             await asyncio.to_thread(safe_append_row, ws_sym, new_row)
+
+                            # Leer nuevas filas para obtener ATH
+                            all_values = await asyncio.to_thread(ws_sym.get_all_values)
+                            # Hallar la columna de 'priceUsd'
+                            price_usd_col = crypto_extended_headers.index("priceUsd")
+                            # Saltar cabecera + 1 fila de grouping
+                            price_vals = []
+                            for row_vals in all_values[2:]:
+                                if len(row_vals) > price_usd_col and row_vals[price_usd_col]:
+                                    try:
+                                        valf = float(row_vals[price_usd_col])
+                                        price_vals.append(valf)
+                                    except:
+                                        pass
+                            current_ath = max(price_vals) if price_vals else extracted["price"]
+
+                            # Actualizar la col "ATH Price USD" => col 10 en ca_tracking
+                            updates.append({
+                                "range": f"J{rowi}",
+                                "values": [[current_ath]]
+                            })
 
             if updates:
                 await asyncio.to_thread(ws_ca_tracking.batch_update, updates)
@@ -375,7 +433,8 @@ def register_pair(pair_data, chain, raw_ca_or_pair, grupo, ts_str):
         extracted["symbol"],
         extracted["price"],  # init
         extracted["price"],  # current
-        0.0
+        0.0,
+        extracted["price"]  # ATH
     ]
     row_idx = safe_append_row(ws_ca_tracking, row)
     if row_idx:

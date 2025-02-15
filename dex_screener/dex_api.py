@@ -63,12 +63,15 @@ def extract_all_columns(pair_json):
     """
     base = pair_json.get('baseToken', {})
     quote = pair_json.get('quoteToken', {})
-    txns_24h = pair_json.get('txns', {}).get('h24', {})
-    volume_24h = pair_json.get('volume', {}).get('h24', 0)
+    txns = pair_json.get('txns', {})
+    volume = pair_json.get('volume', {})
+    price_change = pair_json.get('priceChange', {})
     liquidity = pair_json.get('liquidity', {})
+    info = pair_json.get('info', {})
     return {
         "chainId": pair_json.get("chainId",""),
         "dexId": pair_json.get("dexId",""),
+        "url": pair_json.get("url",""),
         "pairAddress": pair_json.get("pairAddress",""),
         "baseTokenAddress": base.get("address",""),
         "baseTokenName": base.get("name",""),
@@ -78,16 +81,33 @@ def extract_all_columns(pair_json):
         "quoteTokenSymbol": quote.get("symbol",""),
         "priceNative": pair_json.get("priceNative",""),
         "priceUsd": pair_json.get("priceUsd",""),
-        "txns24hBuys": txns_24h.get("buys",0),
-        "txns24hSells": txns_24h.get("sells",0),
-        "volume24h": volume_24h,
-        "priceChange24h": pair_json.get("priceChange",{}).get("h24",0),
+        "txns_m5_buys": txns.get("m5",{}).get("buys",0),
+        "txns_m5_sells": txns.get("m5",{}).get("sells",0),
+        "txns_h1_buys": txns.get("h1",{}).get("buys",0),
+        "txns_h1_sells": txns.get("h1",{}).get("sells",0),
+        "txns_h6_buys": txns.get("h6",{}).get("buys",0),
+        "txns_h6_sells": txns.get("h6",{}).get("sells",0),
+        "txns_h24_buys": txns.get("h24",{}).get("buys",0),
+        "txns_h24_sells": txns.get("h24",{}).get("sells",0),
+        "volume_m5": volume.get("m5",0),
+        "volume_h1": volume.get("h1",0),
+        "volume_h6": volume.get("h6",0),
+        "volume_h24": volume.get("h24",0),
+        "priceChangeM5": price_change.get("m5",0),
+        "priceChangeH1": price_change.get("h1",0),
+        "priceChangeH6": price_change.get("h6",0),
+        "priceChangeH24": price_change.get("h24",0),
         "liquidityUsd": liquidity.get("usd",0),
         "liquidityBase": liquidity.get("base",0),
         "liquidityQuote": liquidity.get("quote",0),
         "fdv": pair_json.get("fdv",0),
         "marketCap": pair_json.get("marketCap",0),
         "pairCreatedAt": pair_json.get("pairCreatedAt",""),
+        "infoImageUrl": info.get("imageUrl",""),
+        "infoHeader": info.get("header",""),
+        "infoOpenGraph": info.get("openGraph",""),
+        "infoWebsites": json.dumps(info.get("websites", [])),
+        "infoSocials": json.dumps(info.get("socials", []))
     }
 
 def extract_all_data_as_json(pair_json):
