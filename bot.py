@@ -27,7 +27,7 @@ from utils.common import (
 
 API_ID = 28644650
 API_HASH = "e963f9b807bcf9d665b1d20de66f7c69"
-GEMINI_API_KEY = "YOUR_DUMMY_KEY"
+GEMINI_API_KEY = "AIzaSyDTlAcI4qNx_QAKcTli2sc5jc_xl53qPZA"
 
 SHEET_ID = "1K7p3Yeu6k1CzFrfJGUUD3DQocUNdPjgIGQl8YNtjAjQ"
 CREDENTIALS_FILE = "credentials.json"
@@ -79,7 +79,8 @@ ca_tracking_headers = [
     "Initial Price USD",
     "Current Price USD",
     "Profit (%)",
-    "ATH Price USD"
+    "ATH Price USD",
+    "ATH Profit (%)"
 ]
 ws_ca_tracking = get_or_create_worksheet(spreadsheet, "ca_tracking", ca_tracking_headers)
 
@@ -228,16 +229,16 @@ async def update_loop():
 
             for chain, addrs in chain_map.items():
                 if not addrs: continue
-                chunk=30
+                chunk = 30
                 for i in range(0, len(addrs), chunk):
-                    batch = addrs[i:i+chunk]
-                    pair_data_list = get_pairs_data(chain, batch) # dex_screener
+                    batch = addrs[i : i + chunk]
+                    pair_data_list = get_pairs_data(chain, batch)  # dex_screener
                     for pd in pair_data_list:
-                        paddr = pd.get("pairAddress","")
+                        paddr = pd.get("pairAddress", "")
                         if paddr not in tracked_pairs:
                             continue
                         extracted = extract_pair_fields(pd)
-                        if not extracted or extracted["price"]<=0:
+                        if not extracted or extracted["price"] <= 0:
                             continue
                         initp = tracked_pairs[paddr]["initial_price"]
                         rowi = tracked_pairs[paddr]["row_index"]
@@ -245,18 +246,15 @@ async def update_loop():
                         symb = tracked_pairs[paddr]["symbol"]
                         profit = compute_profit_percent(extracted["price"], initp)
 
-                        # Actualizar en ca_tracking
-                        # col 7 => init, 8 => current, 9=>profit
+                        # Actualizar en ca_tracking (col H=Current Price, I=Profit (%))
                         updates.append({
                             "range": f"H{rowi}:I{rowi}",
                             "values": [[extracted["price"], profit]]
                         })
 
                         # Insertar en hoja individual
-                        # Con emoticon => ensure_crypto_sheet(chain, symb)
                         ws_sym = ensure_crypto_sheet(chain, symb)
                         if ws_sym:
-                            # Extraemos JSON con TODO
                             pd_all = extract_all_columns(pd)
                             raw_data = extract_all_data_as_json(pd)
                             new_row = [
@@ -304,11 +302,10 @@ async def update_loop():
                             ]
                             await asyncio.to_thread(safe_append_row, ws_sym, new_row)
 
-                            # Leer nuevas filas para obtener ATH
+                            # Leer nuevas filas de la hoja individual para hallar el ATH
                             all_values = await asyncio.to_thread(ws_sym.get_all_values)
-                            # Hallar la columna de 'priceUsd'
                             price_usd_col = crypto_extended_headers.index("priceUsd")
-                            # Saltar cabecera + 1 fila de grouping
+                            # Saltar cabecera y fila de agrupación
                             price_vals = []
                             for row_vals in all_values[2:]:
                                 if len(row_vals) > price_usd_col and row_vals[price_usd_col]:
@@ -318,11 +315,12 @@ async def update_loop():
                                     except:
                                         pass
                             current_ath = max(price_vals) if price_vals else extracted["price"]
+                            ath_profit = compute_profit_percent(current_ath, initp)
 
-                            # Actualizar la col "ATH Price USD" => col 10 en ca_tracking
+                            # Actualizar ATH Price (col J) and ATH Profit (col K)
                             updates.append({
-                                "range": f"J{rowi}",
-                                "values": [[current_ath]]
+                                "range": f"J{rowi}:K{rowi}",
+                                "values": [[current_ath, ath_profit]]
                             })
 
             if updates:
@@ -334,7 +332,6 @@ async def update_loop():
         except Exception as e:
             print(f"❌ Error en update_loop => {e}")
         await asyncio.sleep(UPDATE_INTERVAL)
-
 #############################################
 #  TELEGRAM PROCESAMIENTO
 #############################################
@@ -411,7 +408,7 @@ def register_by_pairaddr(chain, pair_addr, grupo, ts_str):
 
 def register_pair(pair_data, chain, raw_ca_or_pair, grupo, ts_str):
     from dex_screener.dex_api import extract_pair_fields
-    pair_addr = pair_data.get("pairAddress","")
+    pair_addr = pair_data.get("pairAddress", "")
     if not pair_addr:
         return
     if duplicate_checker.is_duplicate(pair_addr):
@@ -419,11 +416,11 @@ def register_pair(pair_data, chain, raw_ca_or_pair, grupo, ts_str):
         return
 
     extracted = extract_pair_fields(pair_data)
-    if not extracted or extracted["price"]<=0:
+    if not extracted or extracted["price"] <= 0:
         print(f"⚠️ Datos inválidos => {raw_ca_or_pair}")
         return
 
-    # Insertar en ca_tracking
+    # Insertar en ca_tracking con columna adicional para ATH profit
     row = [
         ts_str,
         chain,
@@ -431,10 +428,11 @@ def register_pair(pair_data, chain, raw_ca_or_pair, grupo, ts_str):
         raw_ca_or_pair,
         pair_addr,
         extracted["symbol"],
-        extracted["price"],  # init
-        extracted["price"],  # current
-        0.0,
-        extracted["price"]  # ATH
+        extracted["price"],   # Initial Price USD
+        extracted["price"],   # Current Price USD
+        0.0,                  # Profit (%) - to be updated
+        extracted["price"],   # ATH Price USD (initially same as price)
+        0.0                   # ATH Profit (%) - to be updated
     ]
     row_idx = safe_append_row(ws_ca_tracking, row)
     if row_idx:
