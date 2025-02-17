@@ -24,7 +24,7 @@ yarn-error.log*
 
 # Archivos sensibles
 credentials.json
-session.name.session
+session_name.session
 *.pem
 *.crt
 *.key
